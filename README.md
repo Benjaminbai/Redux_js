@@ -163,3 +163,184 @@
             unsubscribe();
             ```
     - Redux 提供了一个combineReducers方法，用于 Reducer 的拆分。你只要定义各个子 Reducer 函数，然后用这个方法，将它们合成一个大的 Reducer
+
+## 实现一个 Redux
+1. 实现 store
+    - 在redux中，store通过createState创建
+    ```
+    import { createStore } from 'redux'; 
+    const store = createStore(rootReducer, initalStore, middleware);
+    ```
+    - 先看一下redux中暴露的几个方法
+        - 其中 createStore 返回的方法主要有 subscribe、dispatch、replaceReducer、getState
+        - createStore 接收三个参数，分别是 reducers 函数、初始值 initalStore、中间件 middleware
+        - store 上挂载了 getState、dispatch、subscribe 三个方法
+        - getState 是获取到 store 的方法，可以通过 store.getState() 获取到 store
+        - dispatch 是发送 action 的方法，它接收一个 action 对象，通知 store 去执行 reducer 函数
+        - subscribe 则是一个监听方法，它可以监听到 store 的变化，所以可以通过 subscribe 将 Redux 和其他框架结合起来
+        - replaceReducer 用来异步注入 reducer 的方法，可以传入新的 reducer 来代替当前的 reducer
+2. 实现 getState
+    - store 的实现原理比较简单，就是根据传入的初始值来创建一个对象
+    - 利用闭包的特性来保留这个 store
+    - 允许通过 getState 来获取到 store
+    ```
+    const createStore = (reducers, initialState, enhancer) => {
+        let store = initialState;
+        const getState = () => store;
+        return {
+            getState
+        }
+    }
+    ```
+3. 实现 subscribe && unsubscribe
+    - 既然 Redux 本质上是一个 发布-订阅 模式，那么就一定会有一个监听方法
+    - 在 Redux 中提供了监听和解除监听的两个方法
+    - 实现方式也比较简单，使用一个数组来保存所有监听的方法
+    ```
+    const createStore = (...) => {
+        ...
+        let listeners = [];
+        const subscribe = (listener) => {
+            listeners.push(listener);
+        }
+        const unsubscribe = (listener) => {
+            const index = listeners.indexOf(listener)
+            listeners.splice(index, 1)
+        }
+    }
+    ```
+4. 实现 dispatch
+    - dispatch 和 action 是息息相关的，只有通过 dispatch 才能发送 action
+    - 而发送 action 之后才会执行 subscribe 监听到的那些方法
+    - 所以 dispatch 做的事情就是将 action 传给 reducer 函数
+    - 将执行后的结果设置为新的 store，然后执行 listeners 中的方法
+    ```
+    const createStore = (reducers, initialState) => {
+        ...
+        let store = initialState;
+        const dispatch = (action) => {
+            store = reducers(store, action);
+            listeners.forEach(listener => listener())
+        }
+    }
+    ```
+    - 这样就行了吗？当然还不够。
+    - 如果有多个 action 同时发送，这样很难说清楚最后的 store 到底是什么样的
+    - 所以需要加锁。在 Redux 中 dispatch 执行后的返回值也是当前的 action
+    ```
+    const createStore = (reducers, initialState) => {
+        ...
+        let store = initialState;
+        let isDispatch = false;
+        const dispatch = (action) => {
+            if (isDispatch) return action
+            // dispatch必须一个个来
+            isDispatch = true
+            store = reducers(store, action);
+            isDispatch = false
+            listeners.forEach(listener => listener())
+            return action;
+        }
+    }
+    ```
+5. 实现 combineReducers
+    - 可以猜测 combineReducers 是一个高阶函数，接收一个对象作为参数，返回了一个新的函数
+    - combineReducers 做了什么工作:
+        - 收集所有传入的 reducer 函数
+        - 在 dispatch 中执行 combination 函数时，遍历执行所有 reducer 函数
+        - 如果某个 reducer 函数返回了新的 state，那么 combination 就返回这个 state，否则就返回传入的 state
+6. 中间件 和 Store Enhancer
+    - 考虑到这样的情况，我想要打印每次 action 的相关信息以及 store 前后的变化，那我只能到每个 dispatch 处手动打印信息，这样繁琐且重复
+    - createStore 中提供的第三个参数，可以实现对 dispatch 函数的增强，我们称之为 Store Enhancer
+
+7. 实现 applyMiddleware
+    - 在创建 store 的时候，经常会使用很多中间件，通过 applyMiddleware 将多个中间件注入到 store 之中
+    ```
+    // 这里需要对参数为0或1的情况进行判断
+    const compose = (...funcs) => {
+        if (!funcs) {
+            return args => args
+        }
+        if (funcs.length === 1) {
+            return funcs[0]
+        }
+        return funcs.reduce((f1, f2) => (...args) => f1(f2(...args)))
+    }
+
+    const bindActionCreator = (action, dispatch) => {
+        return (...args) => dispatch(action(...args))
+    }
+
+    const createStore = (reducer, initState, enhancer) => {
+        if (!enhancer && typeof initState === "function") {
+            enhancer = initState
+            initState = null
+        }
+        if (enhancer && typeof enhancer === "function") {
+            return enhancer(createStore)(reducer, initState)
+        }
+        let store = initState, 
+            listeners = [],
+            isDispatch = false;
+        const getState = () => store
+        const dispatch = (action) => {
+            if (isDispatch) return action
+            // dispatch必须一个个来
+            isDispatch = true
+            store = reducer(store, action)
+            isDispatch = false
+            listeners.forEach(listener => listener())
+            return action
+        }
+        const subscribe = (listener) => {
+            if (typeof listener === "function") {
+                listeners.push(listener)
+            }
+            return () => unsubscribe(listener)
+        }
+        const unsubscribe = (listener) => {
+            const index = listeners.indexOf(listener)
+            listeners.splice(index, 1)
+        }
+        return {
+            getState,
+            dispatch,
+            subscribe,
+            unsubscribe
+        }
+    }
+
+    const applyMiddleware = (...middlewares) => {
+        return (createStore) => (reducer, initState, enhancer) => {
+            const store = createStore(reducer, initState, enhancer);
+            const middlewareAPI = {
+                getState: store.getState,
+                dispatch: (action) => dispatch(action)
+            }
+            let chain = middlewares.map(middleware => middleware(middlewareAPI))
+            store.dispatch = compose(...chain)(store.dispatch)
+            return {
+            ...store
+            }
+        }
+    }
+
+    const combineReducers = reducers => {
+        const finalReducers = {},
+            nativeKeys = Object.keys
+        nativeKeys(reducers).forEach(reducerKey => {
+            if(typeof reducers[reducerKey] === "function") {
+                finalReducers[reducerKey] = reducers[reducerKey]
+            }
+        })
+        return (state, action) => {
+            const store = {}
+            nativeKeys(finalReducers).forEach(key => {
+                const reducer = finalReducers[key]
+                const nextState = reducer(state[key], action)
+                store[key] = nextState
+            })
+            return store
+        }
+    }
+    ```
